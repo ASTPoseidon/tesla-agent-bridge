@@ -24,6 +24,7 @@ export async function configure(root = process.cwd(), overrides = {}) {
   }
   await mkdir(path('.config'), { recursive: true, mode: 0o700 });
   await mkdir(path('.secrets'), { recursive: true, mode: 0o700 });
+  await mkdir(path('.data'), { recursive: true, mode: 0o700 });
   let secrets;
   if (existsSync(path('.secrets/production.json'))) {
     secrets = JSON.parse(readFileSync(path('.secrets/production.json'), 'utf8'));
