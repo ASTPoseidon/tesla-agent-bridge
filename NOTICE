@@ -10,3 +10,8 @@ test vectors, not production vehicle keys. Deployment keys are always generated 
 
 Runtime dependency licenses are included in their npm packages; built distributions
 include the generated legal comments and license notice files.
+
+GPS navigation wire layout and synthetic golden vectors use Teslemetry/tesla-protocol
+30360ae9ab745c6b65a73688dd3dbab9d4a47ee8 under Apache-2.0; see vendor/teslemetry.
+Coordinate conversion formulas are adapted from wandergis/coordtransform under MIT;
+see vendor/coordtransform/LICENSE.

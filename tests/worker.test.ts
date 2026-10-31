@@ -21,7 +21,7 @@ dK9dMsQQ9DmiI0E3rRuwhf1OiBPJWPEdlw==
   const sessionKey = await sharedKey(peerKey, publicKey);
   const vin = '5YJ30123456789ABC';
   let refreshes = 0, commands = 0, upstreamFailure = false;
-  let navigationRequests = 0, navigationStatus = 200;
+  let navigationRequests = 0, navigationStatus = 200, gpsCommands = 0;
   let navigationResponse = JSON.stringify({ response: { result: true } });
   const testScript = bundle.outputFiles[0].text.replace('function errorResponse(error) {', 'function errorResponse(error) { if (!(error instanceof ApiError) && !(error instanceof VehicleError)) console.error("Test diagnostic", error);');
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: testScript, compatibilityDate: '2026-10-30',
@@ -53,6 +53,7 @@ dK9dMsQQ9DmiI0E3rRuwhf1OiBPJWPEdlw==
           return Response.json({ response: b64(UniversalMessage.RoutableMessage.encode({ ...base, session_info: info, signature_data: { session_info_tag: { tag } } }).finish()) });
         }
         commands++;
+        if (Buffer.from(message.protobuf_message_as_bytes!).toString('hex') === '1215aa0312090000000000c04240110000000000905ec0') gpsCommands++;
         if (upstreamFailure) return Response.json({ error: 'gateway timeout' }, { status: 504 });
         const auth = message.signature_data?.HMAC_Personalized_data;
         assert.ok(auth && auth.counter! > 1 && auth.tag?.length === 32);
@@ -128,5 +129,17 @@ dK9dMsQQ9DmiI0E3rRuwhf1OiBPJWPEdlw==
       assert.deepEqual(await replay.json(), error); assert.equal(navigationRequests, before + 1);
     }
     assert.equal(commands, 2);
+    upstreamFailure = false;
+    const gpsEndpoint = '/api/1/vehicles/' + vin + '/command/navigation_gps_request';
+    const gpsBody = { lat:37.5, lon:-122.25, coordinate_system:'wgs84' };
+    const restBeforeGps = navigationRequests;
+    assert.equal((await call(gpsEndpoint,'POST','caller-test-key',{lat:37.5,lon:-122.25},{'Idempotency-Key':'test-gps-missing-crs'})).status,400);
+    assert.equal(gpsCommands,0);
+    const gps = await call(gpsEndpoint,'POST','caller-test-key',gpsBody,{'Idempotency-Key':'test-navigation-gps-once'});
+    assert.equal(gps.status,200,await gps.clone().text()); assert.equal((await gps.json() as any).response.result,true);
+    const gpsReplay = await call(gpsEndpoint,'POST','caller-test-key',gpsBody,{'Idempotency-Key':'test-navigation-gps-once'});
+    assert.equal(gpsReplay.headers.get('Idempotency-Replayed'),'true');
+    assert.equal((await call(gpsEndpoint,'POST','caller-test-key',{...gpsBody,lat:38},{'Idempotency-Key':'test-navigation-gps-once'})).status,409);
+    assert.equal(gpsCommands,1); assert.equal(commands,3); assert.equal(navigationRequests,restBeforeGps);
   } finally { await mf.dispose(); }
 });

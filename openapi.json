@@ -3338,6 +3338,176 @@
         }
       }
     },
+    "/api/1/vehicles/{vin}/command/navigation_gps_request": {
+      "post": {
+        "operationId": "navigation_gps_request",
+        "summary": "按地图坐标替换导航目的地（车辆签名通道）",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "lat": {
+                    "type": "number",
+                    "minimum": -90,
+                    "maximum": 90
+                  },
+                  "lon": {
+                    "type": "number",
+                    "minimum": -180,
+                    "maximum": 180
+                  },
+                  "coordinate_system": {
+                    "type": "string",
+                    "enum": [
+                      "wgs84",
+                      "gcj02",
+                      "bd09"
+                    ],
+                    "description": "必须标明地图坐标系：GPS/OSM=wgs84，高德/腾讯=gcj02，百度=bd09；桥接转换为 WGS84。先明确地点及坐标来源；不支持 order/途经点追加。"
+                  }
+                },
+                "required": [
+                  "lat",
+                  "lon",
+                  "coordinate_system"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/1/vehicles/{vin}/command/media_toggle_playback": {
       "post": {
         "operationId": "media_toggle_playback",

@@ -1,4 +1,5 @@
 import { ApiError, fleetRequest } from './fleet';
+import { navigationPoint } from './navigation';
 import { acceptHandshake, b64, commandResponse, commands, encodeCommand, handshakeRequest, hex, random, signCommand, unb64, utf8, VehicleError, type Session } from './protocol';
 import { regionConfig, DEFAULT_SCOPES } from './regions';
 import type { BridgeEnv, OwnerContext } from './types';
@@ -192,6 +193,10 @@ export class OwnerAccountCore {
       if (command === 'navigation_request') {
         if (body.type !== 'share_ext_content_raw' || typeof body.value !== 'string' || !body.value.trim() || body.value.length > 2048) throw new ApiError(400, 'invalid_navigation', '导航需要 type=share_ext_content_raw 和目的地 value');
         return this.idempotent(request, body, () => this.fleet('/api/1/vehicles/' + vin + '/command/navigation_request', 'POST', { type: body.type, value: body.value, locale: 'zh-CN', timestamp_ms: String(Date.now()) }));
+      }
+      if (command === 'navigation_gps_request') {
+        try { navigationPoint(body); }
+        catch (error) { if (error instanceof RangeError) throw new ApiError(400, 'invalid_navigation_gps', error.message); throw error; }
       }
       encodeCommand(command, body); // Validate before creating a pending operation.
       return this.idempotent(request, body, () => this.signed(vin, command, body));

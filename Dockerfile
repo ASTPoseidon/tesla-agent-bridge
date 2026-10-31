@@ -7,6 +7,8 @@ COPY scripts/build.mjs scripts/build.mjs
 COPY openapi.json ./
 COPY LICENSE NOTICE ./
 COPY vendor/tesla/LICENSE vendor/tesla/LICENSE
+COPY vendor/teslemetry/LICENSE vendor/teslemetry/LICENSE
+COPY vendor/coordtransform/LICENSE vendor/coordtransform/LICENSE
 RUN npm run build
 
 FROM node:24-bookworm-slim

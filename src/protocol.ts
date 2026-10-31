@@ -1,6 +1,7 @@
 // Implements Tesla's published Vehicle Command Protocol using native WebCrypto.
 // Protocol and schemas: teslamotors/vehicle-command, commit d6239bf377b8a5859e8f5c9d64409df2a057934a.
 import { UniversalMessage, Signatures, CarServer, VCSEC } from './tesla-proto.js';
+import { encodeNavigationGps } from './navigation';
 
 export const utf8 = (s: string) => new TextEncoder().encode(s);
 export const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
@@ -115,7 +116,7 @@ const emptyCommands: Record<string, string> = {
   media_toggle_playback: 'mediaPlayAction', media_next_track: 'mediaNextTrack', media_prev_track: 'mediaPreviousTrack',
   charge_port_door_open: 'chargePortDoorOpen', charge_port_door_close: 'chargePortDoorClose'
 };
-export const commands = [...Object.keys(emptyCommands), 'door_lock', 'door_unlock', 'actuate_trunk', 'close_trunk', 'auto_conditioning_start', 'auto_conditioning_stop', 'set_temps', 'window_control', 'remote_seat_cooler_request', 'remote_seat_heater_request', 'adjust_volume', 'media_volume_up', 'media_volume_down', 'charge_start', 'charge_stop', 'set_charge_limit', 'set_charging_amps', 'set_sentry_mode', 'navigation_request'];
+export const commands = [...Object.keys(emptyCommands), 'door_lock', 'door_unlock', 'actuate_trunk', 'close_trunk', 'auto_conditioning_start', 'auto_conditioning_stop', 'set_temps', 'window_control', 'remote_seat_cooler_request', 'remote_seat_heater_request', 'adjust_volume', 'media_volume_up', 'media_volume_down', 'charge_start', 'charge_stop', 'set_charge_limit', 'set_charging_amps', 'set_sentry_mode', 'navigation_request', 'navigation_gps_request'];
 export function encodeCommand(command: string, p: Record<string, any>) {
   const car = (field: string, values: any) => ({ domain: 3, payload: CarServer.Action.encode({ vehicleAction: { [field]: values } }).finish() });
   const vc = (values: any) => ({ domain: 2, payload: VCSEC.UnsignedMessage.encode(values).finish() });
@@ -124,6 +125,9 @@ export function encodeCommand(command: string, p: Record<string, any>) {
   };
   if (emptyCommands[command]) return car(emptyCommands[command], {});
   switch (command) {
+    case 'navigation_gps_request':
+      try { return { domain: 3, payload: encodeNavigationGps(p) }; }
+      catch (error) { if (error instanceof RangeError) throw new VehicleError('invalid_parameter', error.message); throw error; }
     case 'door_lock': return vc({ RKEAction: 1 });
     case 'door_unlock': return vc({ RKEAction: 0 });
     case 'close_trunk': return vc({ closureMoveRequest: { rearTrunk: 4 } });

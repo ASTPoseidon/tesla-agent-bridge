@@ -36,10 +36,18 @@ Authorization: Bearer <READONLY_API_KEY>
 
 给 agent 的通用行为说明见 `examples/agent-instructions.md`。多车时先明确目标 VIN。位置查询需要显式选择 location_data/drive_state，常规车况默认不取位置，也不自动唤醒。
 
+## 地点 → 地图坐标 → 车机导航
+
+收到导航目的地后，先通过地图工具或地图页面查询**对应城市、校区/分店和入口**，取得地点坐标及坐标系；有多个匹配结果时先明确目标。不要凭印象编坐标。
+
+调用 `POST /api/1/vehicles/{vin}/command/navigation_gps_request`，携带幂等键，JSON 为 `{"lat":37.5,"lon":-122.25,"coordinate_system":"wgs84"}`（仅格式示例）。高德传 `gcj02`，百度传 `bd09`；桥接归一为 WGS84 后签名发送，避免直接混用地图坐标。MCP 中选择同名导航工具，另填 `confirmed` 和 `idempotency_key`。
+
+此入口替换当前目的地，不接受 `order` 或追加途经点。签名字段来自公开的 Teslemetry 协议扩展，见 `vendor/teslemetry/README.md`。原文字分享接口继续保留，报错时不自动切换接口重发；结果仍需检查 `response.result`，必要时由用户核对车机落点。
+
 ## 结果与错误
 
 控制请求的 HTTP 200 不等于成功，检查 `response.result`。真实执行结果未知时会有 `execution_unknown:true`；不能通过自动换幂等键来重试。原幂等结果缓存 24 小时，同键回放带 `Idempotency-Replayed:true`。
 
-保留错误码及 `details.phase / failure / upstream_status / elapsed_ms`。上游 HTTP 500、网络超时与 JSON 解析失败是不同原因，不能只看桥接 502。导航按 Tesla 官方 SDK 使用 REST；上游出错或地址无法送达时仍应向用户如实报告，不能自动连发。
+保留错误码及 `details.phase / failure / upstream_status / elapsed_ms`。上游 HTTP 500、网络超时与 JSON 解析失败是不同原因，不能只看桥接 502。导航失败或地址无法送达时仍应向用户如实报告，不能自动连发。
 
 前端页面可使用这些相同接口；管理密钥仅在车主本地页面内存中使用，应用后端不要向普通浏览器或聊天提示词返回私钥、OAuth 令牌或 client secret。
