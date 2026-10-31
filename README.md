@@ -4,6 +4,23 @@
 
 应用代码 MIT 开源；Tesla 协议资源保留 Apache-2.0 许可。本仓库只含通用源码和示例，不含任何车主的生产凭据、车辆记录或私钥。
 
+## 最简单：把仓库交给 agent
+
+直接把仓库链接发给一个能执行命令、能访问部署环境的 agent，告诉它**用什么域名、后端放在哪里、车辆属于哪个地区**，让它照着仓库完成配置和部署。可以复制下面这段，改成自己的信息：
+
+```text
+请帮我部署这个项目：https://github.com/ASTPoseidon/tesla-agent-bridge
+域名：https://tesla.example.com（换成我的域名）
+后端位置：Cloudflare Workers（也可改成“我的 VPS，用 Docker”）
+车辆地区：中国大陆（也可选北美或欧洲）
+先读仓库的 AGENTS.md 和 docs/deployment.md，完成部署及只读验证，
+再给我设置页面地址，以及接入聊天 agent 的 HTTP/OpenAPI 或 MCP 配置。
+需要我提供 Tesla 应用的 Client ID/Secret 或部署权限时告诉我。
+Tesla 账号登录授权和车内虚拟钥匙配对由我自己完成。
+```
+
+配置文件、部署命令和接口适配交给 agent 处理即可；你配合提供部署权限、注册 Tesla 开发者应用，最后登录授权并坐进车里配对钥匙。本人操作见[完成首次 Tesla 接入](#完成首次-tesla-接入)，手动部署步骤放在下面供需要时查阅。
+
 ## 你会得到什么
 
 - 电量、温度、门窗等车况查询；按需查询位置。
@@ -15,7 +32,10 @@
 
 一个实例对应一个车主账户，可管理该账户已授权的多辆车。Node/Docker 使用单实例，不要将同一 SQLite 数据库用于多个服务进程。
 
-## 快速开始
+## 手动部署（可选）
+
+<details>
+<summary>展开手动部署步骤</summary>
 
 准备：Node.js 22.17+（推荐 24 LTS）、自己的 HTTPS 域名、已开通 Fleet API 的 Tesla 开发者应用（注册方法见[完成首次 Tesla 接入](#完成首次-tesla-接入)），以及用于配对的 Tesla 手机 App。Docker 路线另需 Docker 与 Compose 2.30+。
 
@@ -43,6 +63,8 @@ npm run configure
 | 本机 / 原生 VPS | `npm run build`，再 `npm start` | `.data/owner.sqlite` |
 
 Docker 前将域名 DNS 指向 VPS，开放 80/443；CF 前确保域名在该 Cloudflare 账户的 Zone 中。原生服务默认监听 `127.0.0.1:8787`，公网由 HTTPS 反向代理接入。[完整部署与自动更新](docs/deployment.md)。
+
+</details>
 
 ## 完成首次 Tesla 接入
 
