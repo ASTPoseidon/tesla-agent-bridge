@@ -42,7 +42,7 @@ Authorization: Bearer <READONLY_API_KEY>
 
 调用 `POST /api/1/vehicles/{vin}/command/navigation_gps_request`，携带幂等键，JSON 为 `{"lat":37.5,"lon":-122.25,"coordinate_system":"wgs84"}`（仅格式示例）。高德传 `gcj02`，百度传 `bd09`；桥接归一为 WGS84 后签名发送，避免直接混用地图坐标。MCP 中选择同名导航工具，另填 `confirmed` 和 `idempotency_key`。
 
-此入口替换当前目的地，不接受 `order` 或追加途经点。签名字段来自公开的 Teslemetry 协议扩展，见 `vendor/teslemetry/README.md`。原文字分享接口继续保留，报错时不自动切换接口重发；结果仍需检查 `response.result`，必要时由用户核对车机落点。
+此入口替换当前目的地，不接受 `order` 或追加途经点；中国区实车已确认送达。只发送坐标，没有 POI 名称字段，因此车机可能显示附近道路名，需以实际落点核对。签名字段来自公开的 Teslemetry 协议扩展，见 `vendor/teslemetry/README.md`。原文字分享接口继续保留，报错时不自动切换接口重发；结果仍需检查 `response.result`。
 
 ## 结果与错误
 

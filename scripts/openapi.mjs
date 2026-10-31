@@ -11,7 +11,7 @@ const commandDefinitions = {
   remote_seat_cooler_request: ['座椅通风，seat_position 1=左前，2=右前；level 0=关闭，1–3=档位', { seat_position: number(1, 2, true), seat_cooler_level: number(0, 3, true) }],
   remote_seat_heater_request: ['座椅加热：heater 0左前/1右前/2左后/3中后/4右后/5左三排/6右三排；level 0–3', { heater: number(0, 6, true), level: number(0, 3, true) }],
   honk_horn: ['鸣笛', {}], flash_lights: ['闪灯', {}],
-  navigation_request: ['发送目的地到车机', { type: enumeration('share_ext_content_raw'), value: { type: 'string', minLength: 1, maxLength: 2048, description: '目的地地址或地图分享内容' } }],
+  navigation_request: ['文字分享目的地（兼容入口；地图导航优先用 navigation_gps_request）', { type: enumeration('share_ext_content_raw'), value: { type: 'string', minLength: 1, maxLength: 2048, description: '目的地地址或地图分享内容；坐标导航请查地图后使用 navigation_gps_request，并明确坐标系。' } }],
   navigation_gps_request: ['按地图坐标替换导航目的地（车辆签名通道）', { lat: number(-90, 90), lon: number(-180, 180), coordinate_system: { ...enumeration('wgs84','gcj02','bd09'), description: '必须标明地图坐标系：GPS/OSM=wgs84，高德/腾讯=gcj02，百度=bd09；桥接转换为 WGS84。先明确地点及坐标来源；不支持 order/途经点追加。' } }],
   media_toggle_playback: ['切换播放/暂停', {}], media_next_track: ['下一首', {}], media_prev_track: ['上一首', {}],
   media_volume_up: ['增大音量', {}], media_volume_down: ['减小音量', {}], adjust_volume: ['设置音量（0–10）', { volume: number(0, 10) }],

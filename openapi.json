@@ -3179,7 +3179,7 @@
     "/api/1/vehicles/{vin}/command/navigation_request": {
       "post": {
         "operationId": "navigation_request",
-        "summary": "发送目的地到车机",
+        "summary": "文字分享目的地（兼容入口；地图导航优先用 navigation_gps_request）",
         "x-openai-isConsequential": true,
         "parameters": [
           {
@@ -3221,7 +3221,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 2048,
-                    "description": "目的地地址或地图分享内容"
+                    "description": "目的地地址或地图分享内容；坐标导航请查地图后使用 navigation_gps_request，并明确坐标系。"
                   }
                 },
                 "required": [
