@@ -1,0 +1,12 @@
+Tesla Agent Bridge is an independent community project and is not affiliated with Tesla.
+
+The application code is MIT licensed. Tesla protocol schemas, generated schema code,
+and published test vectors are derived from teslamotors/vehicle-command at commit
+d6239bf377b8a5859e8f5c9d64409df2a057934a under Apache License 2.0.
+See vendor/tesla/LICENSE and https://github.com/teslamotors/vehicle-command.
+
+The private keys embedded in protocol/worker simulation tests are Tesla's published
+test vectors, not production vehicle keys. Deployment keys are always generated locally.
+
+Runtime dependency licenses are included in their npm packages; built distributions
+include the generated legal comments and license notice files.

@@ -1,0 +1,5270 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Tesla Agent Bridge",
+    "version": "1.0.0",
+    "description": "个人 Tesla Fleet API 接入，支持 cn/na/eu 区域。所有业务接口使用独立 Bearer API 密钥。车辆控制需要 OAuth 授权及虚拟钥匙配对。此服务不会自动唤醒或自动重发物理操作。"
+  },
+  "servers": [
+    {
+      "url": "https://tesla.example.com"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "schemas": {
+      "BridgeError": {
+        "type": "object",
+        "required": [
+          "error",
+          "message"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "优先保留此机器错误码；不能只记录 HTTP 状态"
+          },
+          "message": {
+            "type": "string"
+          },
+          "execution_unknown": {
+            "type": "boolean",
+            "description": "为 true 时执行结果未确认，不能自动换幂等键重发"
+          },
+          "fault": {
+            "type": "integer"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "fetch",
+                  "http_status",
+                  "response_body"
+                ]
+              },
+              "failure": {
+                "type": "string",
+                "description": "timeout/network/http_error/invalid_json/body_read_failed/invalid_json_shape"
+              },
+              "upstream_status": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 599,
+                "description": "只有已收到 Tesla HTTP 响应时才提供"
+              },
+              "elapsed_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "本次 Fleet 请求耗时，不包含排队和 OAuth 刷新"
+              }
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "调用方填 API_KEY；/v1/auth/* 和 /v1/setup/* 填 ADMIN_KEY。不要填写 Tesla client secret 或令牌。"
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "服务健康状态（不表示车辆已授权）",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "operationId": "capabilities",
+        "summary": "查询支持的指令",
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles": {
+      "get": {
+        "operationId": "listVehicles",
+        "summary": "列出已授权车辆",
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}": {
+      "get": {
+        "operationId": "vehicleStatus",
+        "summary": "车辆在线/休眠状态，不自动唤醒",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/vehicle_data": {
+      "get": {
+        "operationId": "vehicleData",
+        "summary": "查车况，不自动唤醒；位置仅在明确指定端点时读取",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "query",
+            "name": "endpoints",
+            "schema": {
+              "type": "string",
+              "default": "charge_state;climate_state;vehicle_state;vehicle_config"
+            },
+            "description": "分号分隔。需要位置时显式传 location_data（可同时传 drive_state）。原始单位以 Tesla 返回为准；续航/里程通常为英里，转公里乘 1.609344。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/fleet_status": {
+      "get": {
+        "operationId": "fleetStatus",
+        "summary": "查看虚拟钥匙是否已配对，以及是否要求签名协议",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/key_status": {
+      "get": {
+        "operationId": "keyStatus",
+        "summary": "只读验证车辆安全系统和车机的加密会话，不发送物理控制指令；需要车辆在线",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/wake_up": {
+      "post": {
+        "operationId": "wakeVehicle",
+        "summary": "显式唤醒车辆",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/status": {
+      "get": {
+        "operationId": "authorizationStatus",
+        "summary": "管理接口：查询是否已授权，使用 ADMIN_KEY",
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/start": {
+      "post": {
+        "operationId": "startAuthorization",
+        "summary": "管理接口：启动 OAuth，使用 ADMIN_KEY；浏览器必须保留响应 Cookie，随后在同一浏览器访问 authorize_url",
+        "x-openai-isConsequential": true,
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/setup/register": {
+      "post": {
+        "operationId": "registerPartner",
+        "summary": "管理接口：向 Tesla 注册本应用域名与公钥，使用 ADMIN_KEY",
+        "x-openai-isConsequential": true,
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/door_lock": {
+      "post": {
+        "operationId": "door_lock",
+        "summary": "锁车",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/door_unlock": {
+      "post": {
+        "operationId": "door_unlock",
+        "summary": "解锁",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/actuate_trunk": {
+      "post": {
+        "operationId": "actuate_trunk",
+        "summary": "操作前后备箱（rear 是切换操作，请先查询状态）",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "which_trunk": {
+                    "type": "string",
+                    "enum": [
+                      "front",
+                      "rear"
+                    ]
+                  }
+                },
+                "required": [
+                  "which_trunk"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/close_trunk": {
+      "post": {
+        "operationId": "close_trunk",
+        "summary": "关闭电动后备箱（车型须支持）",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/auto_conditioning_start": {
+      "post": {
+        "operationId": "auto_conditioning_start",
+        "summary": "打开空调",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/auto_conditioning_stop": {
+      "post": {
+        "operationId": "auto_conditioning_stop",
+        "summary": "关闭空调",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/set_temps": {
+      "post": {
+        "operationId": "set_temps",
+        "summary": "设置空调温度，单位摄氏度",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "driver_temp": {
+                    "type": "number",
+                    "minimum": 15,
+                    "maximum": 28
+                  },
+                  "passenger_temp": {
+                    "type": "number",
+                    "minimum": 15,
+                    "maximum": 28
+                  }
+                },
+                "required": [
+                  "driver_temp",
+                  "passenger_temp"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/window_control": {
+      "post": {
+        "operationId": "window_control",
+        "summary": "所有车窗通风或关闭",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "enum": [
+                      "vent",
+                      "close"
+                    ]
+                  }
+                },
+                "required": [
+                  "command"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/remote_seat_cooler_request": {
+      "post": {
+        "operationId": "remote_seat_cooler_request",
+        "summary": "座椅通风，seat_position 1=左前，2=右前；level 0=关闭，1–3=档位",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "seat_position": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2
+                  },
+                  "seat_cooler_level": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3
+                  }
+                },
+                "required": [
+                  "seat_position",
+                  "seat_cooler_level"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/remote_seat_heater_request": {
+      "post": {
+        "operationId": "remote_seat_heater_request",
+        "summary": "座椅加热：heater 0左前/1右前/2左后/3中后/4右后/5左三排/6右三排；level 0–3",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "heater": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 6
+                  },
+                  "level": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3
+                  }
+                },
+                "required": [
+                  "heater",
+                  "level"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/honk_horn": {
+      "post": {
+        "operationId": "honk_horn",
+        "summary": "鸣笛",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/flash_lights": {
+      "post": {
+        "operationId": "flash_lights",
+        "summary": "闪灯",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/navigation_request": {
+      "post": {
+        "operationId": "navigation_request",
+        "summary": "发送目的地到车机",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "share_ext_content_raw"
+                    ]
+                  },
+                  "value": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "description": "目的地地址或地图分享内容"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/media_toggle_playback": {
+      "post": {
+        "operationId": "media_toggle_playback",
+        "summary": "切换播放/暂停",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/media_next_track": {
+      "post": {
+        "operationId": "media_next_track",
+        "summary": "下一首",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/media_prev_track": {
+      "post": {
+        "operationId": "media_prev_track",
+        "summary": "上一首",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/media_volume_up": {
+      "post": {
+        "operationId": "media_volume_up",
+        "summary": "增大音量",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/media_volume_down": {
+      "post": {
+        "operationId": "media_volume_down",
+        "summary": "减小音量",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/adjust_volume": {
+      "post": {
+        "operationId": "adjust_volume",
+        "summary": "设置音量（0–10）",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "volume": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 10
+                  }
+                },
+                "required": [
+                  "volume"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/charge_port_door_open": {
+      "post": {
+        "operationId": "charge_port_door_open",
+        "summary": "打开充电口",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/charge_port_door_close": {
+      "post": {
+        "operationId": "charge_port_door_close",
+        "summary": "关闭充电口",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/charge_start": {
+      "post": {
+        "operationId": "charge_start",
+        "summary": "开始充电",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/charge_stop": {
+      "post": {
+        "operationId": "charge_stop",
+        "summary": "停止充电",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/set_charge_limit": {
+      "post": {
+        "operationId": "set_charge_limit",
+        "summary": "设置充电上限",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "percent": {
+                    "type": "integer",
+                    "minimum": 50,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "percent"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/set_charging_amps": {
+      "post": {
+        "operationId": "set_charging_amps",
+        "summary": "设置充电电流",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "charging_amps": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 48
+                  }
+                },
+                "required": [
+                  "charging_amps"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/1/vehicles/{vin}/command/set_sentry_mode": {
+      "post": {
+        "operationId": "set_sentry_mode",
+        "summary": "开关哨兵模式",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "vin",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+            },
+            "description": "使用车辆 VIN，不能使用车辆数字 ID"
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            "description": "每次新操作使用 UUID；重试同一操作必须沿用该值。超时先查车况，不能自动换新值重发。24 小时有效。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "on": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "on"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tesla 响应；控制请求必须检查 response.result，不可以仅依据 HTTP 200 判断成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "本地参数校验失败，或 Tesla 上游明确拒绝；用 error/details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "桥接 Bearer 密钥无效，或 Tesla 返回 401；用 error 和 details.upstream_status 区分",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "管理权限/车辆授权范围不符，或 Tesla 明确拒绝",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Tesla 上游返回 408，车辆可能离线或休眠",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "参数/车辆状态/会话或幂等冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "尚未完成车主 OAuth 授权",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求受限；有明确秒数时见 details.retry_after，控制请求不自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "检查 error/details：可能为传输失败、上游 5xx、成功响应无法解析或已有 pending 幂等请求；execution_unknown=true 时先确认执行情况，不能自动重发",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Tesla 返回服务不可用；不自动重发控制请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

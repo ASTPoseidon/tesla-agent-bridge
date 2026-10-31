@@ -1,0 +1,21 @@
+[Unit]
+Description=Tesla Agent Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tesla-bridge
+Group=tesla-bridge
+WorkingDirectory=/opt/tesla-agent-bridge
+ExecStart=/usr/bin/node /opt/tesla-agent-bridge/dist/server.mjs
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/tesla-agent-bridge/.data
+Environment=HOST=127.0.0.1 PORT=8787
+
+[Install]
+WantedBy=multi-user.target

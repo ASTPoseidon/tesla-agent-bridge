@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "tesla": {
+      "command": "node",
+      "args": ["/absolute/path/to/tesla-agent-bridge/dist/mcp-stdio.mjs"],
+      "env": {
+        "BRIDGE_URL": "https://tesla.example.com",
+        "BRIDGE_API_KEY": "REPLACE_WITH_READONLY_OR_CONTROL_API_KEY"
+      }
+    }
+  }
+}

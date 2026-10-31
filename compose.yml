@@ -1,0 +1,34 @@
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .secrets/docker.env
+        format: raw
+    volumes:
+      - bridge_data:/data
+    expose:
+      - "8787"
+    networks: [bridge_net]
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Run npm run configure first}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [bridge_net]
+    depends_on:
+      bridge:
+        condition: service_healthy
+volumes:
+  bridge_data:
+  caddy_data:
+  caddy_config:
+networks:
+  bridge_net:

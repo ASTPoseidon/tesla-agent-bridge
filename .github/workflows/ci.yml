@@ -1,0 +1,80 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', 'scripts/**', 'tests/**', 'package*.json', 'tsconfig.json', 'openapi.json', 'Dockerfile', 'compose.yml', 'deploy/**', '.github/workflows/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: '24', cache: npm }
+      - run: npm ci
+      - run: npm run scan
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Generate isolated simulation configuration
+        run: |
+          cat > .env <<'ENV'
+          APP_ORIGIN=https://bridge.test
+          TESLA_REGION=cn
+          TESLA_CLIENT_ID=11111111-1111-4111-8111-111111111111
+          TESLA_CLIENT_SECRET=ci-test-only-not-a-real-token
+          CLOUDFLARE_ACCOUNT_ID=00000000000000000000000000000000
+          MCP_ALLOW_CONTROL=false
+          ENV
+          npm run configure
+      - name: Compile Cloudflare Worker without deploying
+        run: npx wrangler deploy --dry-run --config .config/wrangler.jsonc --outdir .artifacts/worker
+        env: { WRANGLER_SEND_METRICS: 'false' }
+      - name: Validate Compose and build Docker image
+        run: |
+          docker compose config --quiet
+          docker build -t tesla-agent-bridge:test .
+      - name: Test Docker and persisted state
+        run: |
+          docker run -d --name tesla-bridge-smoke --env-file .secrets/docker.env -v tesla_bridge_ci_data:/data -p 127.0.0.1:18787:8787 tesla-agent-bridge:test
+          node scripts/docker-smoke.mjs
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs tesla-bridge-smoke 2>/dev/null || true
+      - name: Stop test container
+        if: always()
+        run: docker rm -f tesla-bridge-smoke 2>/dev/null || true
+  deploy-cf:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.CF_DEPLOY_ENABLED == 'true'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: cloudflare-production
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      APP_ORIGIN: ${{ vars.APP_ORIGIN }}
+      TESLA_CLIENT_ID: ${{ vars.TESLA_CLIENT_ID }}
+      TESLA_REGION: ${{ vars.TESLA_REGION }}
+      MCP_ALLOW_CONTROL: ${{ vars.MCP_ALLOW_CONTROL }}
+      CORS_ORIGINS: ${{ vars.CORS_ORIGINS }}
+      WORKER_NAME: ${{ vars.WORKER_NAME }}
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: '24', cache: npm }
+      - run: npm ci
+      - name: Check deployment token
+        run: test -n "$CLOUDFLARE_API_TOKEN" || { echo '::error::Configure CLOUDFLARE_API_TOKEN before enabling CF_DEPLOY_ENABLED'; exit 1; }
+      - run: node scripts/configure-ci.mjs
+      - run: npm run cf:deploy
+      - run: npm run check

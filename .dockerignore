@@ -1,0 +1,15 @@
+.git
+node_modules
+.env
+.env.*
+.config
+.secrets
+.data
+.backups
+.wrangler
+dist
+*.pem
+*.key
+*.dpapi
+docs
+tests

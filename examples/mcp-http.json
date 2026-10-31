@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "tesla": {
+      "type": "streamableHttp",
+      "url": "https://tesla.example.com/mcp",
+      "headers": { "Authorization": "Bearer REPLACE_WITH_READONLY_OR_CONTROL_API_KEY" }
+    }
+  }
+}
