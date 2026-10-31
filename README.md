@@ -17,7 +17,7 @@
 
 ## 快速开始
 
-准备：Node.js 22.17+（推荐 24 LTS）、自己的 HTTPS 域名、已开通 Fleet API 的 Tesla 开发者应用，以及用于配对的 Tesla 手机 App。Docker 路线另需 Docker 与 Compose 2.30+。
+准备：Node.js 22.17+（推荐 24 LTS）、自己的 HTTPS 域名、已开通 Fleet API 的 Tesla 开发者应用（注册方法见[完成首次 Tesla 接入](#完成首次-tesla-接入)），以及用于配对的 Tesla 手机 App。Docker 路线另需 Docker 与 Compose 2.30+。
 
 ```bash
 git clone https://github.com/ASTPoseidon/tesla-agent-bridge.git
@@ -46,9 +46,22 @@ Docker 前将域名 DNS 指向 VPS，开放 80/443；CF 前确保域名在该 Cl
 
 ## 完成首次 Tesla 接入
 
-1. 在 Tesla 开发者应用设置允许来源 `https://你的域名`，回调设为 `https://你的域名/callback`，开放所需车辆权限。
-2. 打开 `https://你的域名/setup`，从本机 `.secrets/production.json` 取 **ADMIN_KEY**，点击注册应用域名，再前往 Tesla 官方授权；在同一浏览器完成回调。
-3. 在手机上按页面链接给车辆添加虚拟钥匙。随后用查询接口验证车辆列表；在线时可用 `key_status` 做只读会话验证。
+以下以中国大陆车辆（`TESLA_REGION=cn`）为例。
+
+**前提：先注册开发者应用**
+
+1. 前往 [developer.tesla.cn](https://developer.tesla.cn/)，登录 Tesla 账号，注册一个应用并开通 Fleet API 所需车辆权限。
+2. **Allowed Origin** 填 `https://你的域名`，**Redirect URI** 填 `https://你的域名/callback`，与部署时的 `APP_ORIGIN` 保持一致。
+3. 取得应用的 **Client ID** 和 **Secret**。如果由 agent 协助部署，把这两项和域名交给负责部署的 agent，配置 `TESLA_CLIENT_ID`、`TESLA_CLIENT_SECRET` 和 `APP_ORIGIN`，再按上面的流程完成部署。Secret 保存在私有配置中，不提交到公开仓库。
+
+**部署后：授权账户并配对虚拟钥匙**
+
+1. 打开 `https://你的域名/setup`，从本机 `.secrets/production.json` 取 **ADMIN_KEY**，点击注册应用域名，使 Tesla 能读取已部署的公钥。
+2. 点击前往 Tesla 官方授权，**登录拥有车辆的 Tesla 账号并完成授权**；在同一浏览器完成回调，回到设置页确认授权状态。
+3. **坐在车里**，确认手机已安装并登录 Tesla App；多辆车时先在 App 选择目标车辆。用手机浏览器打开 `https://tesla.cn/_ak/你的域名`，往下拉，点击 **「完成设置」**，进入 Tesla App 按提示把虚拟钥匙配对到车上。如果链接直接打开 App，按 App 提示继续即可。链接里的“你的域名”只填主机名，不带 `https://` 或 `/callback`。
+4. 配对完成后查询车辆列表；车辆在线时可用 `key_status` 做只读会话验证。
+
+NA/EU 用户在 [developer.tesla.com](https://developer.tesla.com/) 注册应用，并使用 `/setup` 按所选地区生成的授权与配对链接。虚拟钥匙流程参见 [Tesla 官方说明](https://developer.tesla.com/docs/fleet-api/virtual-keys/developer-guide)。
 
 ```bash
 npm run check
@@ -69,7 +82,7 @@ npm run check -- --vehicles
 | MCP Streamable HTTP | `/mcp`，使用 Bearer Header |
 | 本地 MCP stdio | `node /绝对路径/dist/mcp-stdio.mjs` |
 
-查询使用 **READONLY_API_KEY**。需要控车时使用 **API_KEY**；MCP 控车还需设置 `MCP_ALLOW_CONTROL=true` 后重新配置/部署。**ADMIN_KEY、Tesla client secret 和车辆私钥不交给聊天 agent。**
+查询使用 **READONLY_API_KEY**。需要控车时使用 **API_KEY**；MCP 控车还需设置 `MCP_ALLOW_CONTROL=true` 后重新配置/部署。日常调用的聊天 agent 只需业务密钥；**ADMIN_KEY、Tesla client secret 和车辆私钥用于部署及车主管理，无需作为聊天接口凭据。**
 
 示例配置见 [HTTP MCP](examples/mcp-http.json)、[stdio MCP](examples/mcp-stdio.json)；可给 agent 读取 [通用调用说明](examples/agent-instructions.md)。具体客户端的字段名或导入方式由该客户端适配。[通用接口文档](docs/agents.md)。
 

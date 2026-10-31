@@ -84,7 +84,9 @@ npm run cf:deploy
 
 ## 首次车辆授权和验证
 
-打开正式域名 `/setup`，用本机 ADMIN_KEY 注册合作伙伴域名、前往官方 OAuth，随后在手机完成虚拟钥匙配对。`cn` 用 Tesla 中国端点，`na/eu` 的授权页面与令牌交换域名按 [官方第三方令牌流程](https://developer.tesla.com/docs/fleet-api/authentication/third-party-tokens) 分开处理。
+完整步骤见 [README：完成首次 Tesla 接入](../README.md#完成首次-tesla-接入)，包含开发者应用注册、Allowed Origin / Redirect URI、交给部署 agent 的 Client ID / Secret，以及手机「完成设置」配对流程。
+
+部署后打开正式域名 `/setup`，用本机 ADMIN_KEY 注册合作伙伴域名，登录 Tesla 账号完成官方 OAuth，再坐在车内用手机完成虚拟钥匙配对。`cn` 用 Tesla 中国端点，`na/eu` 的授权页面与令牌交换域名按 [官方第三方令牌流程](https://developer.tesla.com/docs/fleet-api/authentication/third-party-tokens) 分开处理。
 
 `npm run check` 只查健康；`npm run check -- --vehicles` 使用本机只读密钥查看车辆列表。离线状态不代表部署失败。不要用开锁、闪灯或唤醒来做自动发布探针。
 
